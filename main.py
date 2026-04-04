@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import networkx as nx
 from fractions import Fraction
+import itertools
 
 
 class LieAlgebra:
@@ -240,6 +241,64 @@ class TensorNode(CrystalNode):
             return TensorNode(self.b1, e_b2) if e_b2 else None
 
 
+class MultiTensorNode(CrystalNode):
+    """Computes the n-fold tensor product by recursively mapping to binary TensorNodes."""
+
+    def __init__(self, nodes):
+        self.nodes = tuple(nodes)
+
+    def __repr__(self):
+        return f"({'⊗'.join(str(n) for n in self.nodes)})"
+
+    def __hash__(self):
+        return hash(self.nodes)
+
+    def __eq__(self, other):
+        return isinstance(other, MultiTensorNode) and self.nodes == other.nodes
+
+    def wt(self):
+        w = [Fraction(0)] * len(self.nodes[0].wt())
+        for n in self.nodes:
+            nw = n.wt()
+            for idx in range(len(w)):
+                w[idx] += nw[idx]
+        return tuple(w)
+
+    def _to_nested(self):
+        """Converts sequence of nodes into right-nested binary TensorNodes."""
+        res = self.nodes[-1]
+        for n in reversed(self.nodes[:-1]):
+            res = TensorNode(n, res)
+        return res
+
+    @classmethod
+    def _from_nested(cls, nested_node, length):
+        """Reconstructs the n-tuple representation from nested binary TensorNodes."""
+        if length == 1:
+            return cls((nested_node,))
+        nodes = []
+        curr = nested_node
+        for _ in range(length - 1):
+            nodes.append(curr.b1)
+            curr = curr.b2
+        nodes.append(curr)
+        return cls(nodes)
+
+    def f(self, i):
+        f_nested = self._to_nested().f(i)
+        return self._from_nested(f_nested, len(self.nodes)) if f_nested else None
+
+    def e(self, i):
+        e_nested = self._to_nested().e(i)
+        return self._from_nested(e_nested, len(self.nodes)) if e_nested else None
+
+    def eps(self, i):
+        return self._to_nested().eps(i)
+
+    def phi(self, i):
+        return self._to_nested().phi(i)
+
+
 class DirectSumNode(CrystalNode):
     def __init__(self, base_node, component_id, component_label=None):
         self.base_node = base_node
@@ -438,12 +497,150 @@ def analyze_and_draw_tensor_product(B_lam, B_mu, lie_algebra):
     return G
 
 
+def analyze_and_draw_multi_tensor_product(crystals_list, lie_algebra):
+    """Computes, strictly spaces out, and draws the tensor product to a scalable PDF."""
+    import itertools
+    import math
+
+    G = nx.MultiDiGraph()
+    tensor_nodes = [MultiTensorNode(combo) for combo in itertools.product(*crystals_list)]
+
+    for node in tensor_nodes:
+        G.add_node(node)
+        for i in lie_algebra.index_set:
+            target = node.f(i)
+            if target is not None and target in tensor_nodes:
+                G.add_edge(node, target, label=i)
+
+    components = list(nx.weakly_connected_components(G))
+    components.sort(key=len, reverse=True)
+
+    pos = {}
+    x_offset = 0
+    irreducibles = []
+
+    # Coordinate system: These dictate logical spacing.
+    x_spacing_multiplier = 2.5
+    y_spacing_multiplier = 2.5
+
+    for comp in components:
+        subgraph = G.subgraph(comp)
+        hw_nodes = [n for n in comp if all(n.e(i) is None for i in lie_algebra.index_set)]
+        hw = hw_nodes[0] if hw_nodes else list(comp)[0]
+
+        irreducibles.append((hw.wt(), len(comp), hw, comp))
+
+        depth = {hw: 0}
+        queue = [hw]
+        while queue:
+            curr = queue.pop(0)
+            for i in lie_algebra.index_set:
+                target = curr.f(i)
+                if target in comp and target not in depth:
+                    depth[target] = depth[curr] + 1
+                    queue.append(target)
+
+        depth_counts = {}
+        for n, d in depth.items():
+            depth_counts[d] = depth_counts.get(d, 0) + 1
+
+        drawn_at_depth = {}
+        comp_x_max = x_offset
+
+        comp_ordered = sorted(list(comp), key=lambda x: str(x))
+        for n in comp_ordered:
+            d = depth[n]
+            drawn_at_depth[d] = drawn_at_depth.get(d, 0) + 1
+            w = depth_counts[d]
+
+            x = x_offset + (drawn_at_depth[d] - (w + 1) / 2.0) * x_spacing_multiplier
+            y = -d * y_spacing_multiplier
+            pos[n] = (x, y)
+            comp_x_max = max(comp_x_max, x)
+
+        x_offset = comp_x_max + (x_spacing_multiplier * 1.5)
+
+    # Calculate strictly linear figure size based on layout coordinates
+    if pos:
+        all_x = [p[0] for p in pos.values()]
+        all_y = [p[1] for p in pos.values()]
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+
+        # 1.5 inches of canvas per 1.0 unit of logical distance
+        fig_width = max((max_x - min_x) * 1.5, 12)
+        fig_height = max((max_y - min_y) * 1.5, 12)
+    else:
+        fig_width, fig_height = 20, 14
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    # Base nodes are invisible; we rely strictly on the bbox around the text
+    nx.draw_networkx_nodes(G, pos, ax=ax, node_color='white', edgecolors='none', node_size=600)
+
+    # Strip internal spaces from labels for a more compact string, e.g., ((0,1)⊗(0,1))
+    labels = {n: str(n).replace(" ", "") for n in G.nodes()}
+    bbox_props = dict(boxstyle="round,pad=0.3", fc="whitesmoke", ec="silver", lw=1)
+
+    nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=8, font_weight='bold', bbox=bbox_props)
+
+    color_palette = ['red', 'blue', 'green', 'purple', 'orange', 'cyan']
+    colors = {i: color_palette[(i - 1) % len(color_palette)] for i in lie_algebra.index_set}
+
+    for i in lie_algebra.index_set:
+        edges = [(u, v) for u, v, d in G.edges(data=True) if d['label'] == i]
+        nx.draw_networkx_edges(G, pos, ax=ax, edgelist=edges, edge_color=colors[i],
+                               arrows=True, arrowsize=15, width=1.2,
+                               connectionstyle='arc3,rad=0.15')
+
+    total_dim = 0
+    print(f"\n=== Decomposition of {len(crystals_list)}-Fold Tensor Product Space ===")
+    for wt, dim, hw, comp in irreducibles:
+        comp_x = [pos[n][0] for n in comp]
+        comp_y = [pos[n][1] for n in comp]
+        min_x = min(comp_x)
+        max_x = max(comp_x)
+        max_y = max(comp_y)
+        mid_x = (min_x + max_x) / 2.0
+
+        bbox_props_hw = dict(boxstyle="round,pad=0.4", fc="ivory", ec="gray", lw=1.5, alpha=0.9)
+        str_w = tuple(int(x) if x.denominator == 1 else float(x) for x in wt)
+        ax.text(mid_x, max_y + 1.5, rf"HW: {str_w}" + "\n" + rf"dim: {dim}",
+                fontsize=14, fontweight='bold', ha='center', va='bottom', bbox=bbox_props_hw)
+
+        basis_str = " + ".join([f"{str_w[i]}*w{i + 1}" for i in range(lie_algebra.rank) if str_w[i] != 0])
+        if not basis_str: basis_str = "0"
+        print(f"B({basis_str}) : Dimension {dim}  [Generated by {hw}]")
+        total_dim += dim
+
+    print(f"---------------------------------------------")
+    expected_dim = math.prod([len(c) for c in crystals_list])
+    print(f"Total Dimension Verified: {total_dim} = {expected_dim}\n")
+
+    ax.axis('off')
+    plt.title(rf"{len(crystals_list)}-Fold Tensor Product (Type {lie_algebra.type_name})", fontsize=24, y=1.02)
+
+    legend_patches = [mpatches.Patch(color=colors[i], label=rf'$\tilde{{f}}_{i}$') for i in lie_algebra.index_set]
+    plt.legend(handles=legend_patches, loc='upper right', fontsize=16)
+
+    plt.tight_layout()
+
+    # Save as PDF for infinite zooming and native pan support
+    output_filename = "tensor_decomposition.pdf"
+    plt.savefig(output_filename, format="pdf", bbox_inches="tight")
+
+    print(f"\n[!] Graph saved successfully as '{output_filename}'.")
+    print(f"[!] Open this file in any standard PDF viewer (Acrobat, Preview) to freely zoom and pan the graph.")
+
+    plt.close(fig)
+    return G
+
 if __name__ == '__main__':
-    cartan = LieAlgebra('D3')
+    cartan = LieAlgebra('A2')
 
-    B1 = generate_crystal(cartan, (1, 0, 0))
-    B_trivial = generate_crystal(cartan, (0, 0, 1))
+    # Example: B(0,1) ⊗ B(0,1) ⊗ B(1,0) ⊗ B(1,0)
+    B_01 = generate_crystal(cartan, (0, 1))
+    B_10 = generate_crystal(cartan, (1, 0))
 
-    B_sum = direct_sum([B1, B_trivial], labels=['V', 'k'])
-
-    tensor_graph = analyze_and_draw_tensor_product(B_sum, B1, cartan)
+    factors = [B_01, B_01, B_10, B_10]
+    multi_tensor_graph = analyze_and_draw_multi_tensor_product(factors, cartan)
