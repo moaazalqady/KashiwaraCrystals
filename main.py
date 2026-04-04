@@ -1,0 +1,449 @@
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import networkx as nx
+from fractions import Fraction
+
+
+class LieAlgebra:
+    """Universally defines a Lie Algebra, dynamically generating standard Cartan matrices."""
+
+    def __init__(self, cartan_type=None, cartan_matrix=None):
+        if cartan_matrix is not None:
+            self.type_name = cartan_type if cartan_type else "Custom"
+            raw_matrix = cartan_matrix
+        elif cartan_type is not None:
+            self.type_name = cartan_type.upper().strip()
+            raw_matrix = self._build_standard_matrix(self.type_name)
+        else:
+            raise ValueError("Provide either a cartan_type (e.g., 'A3') or a cartan_matrix.")
+
+        self.matrix = [[Fraction(x) for x in row] for row in raw_matrix]
+        self.rank = len(self.matrix)
+        self.index_set = list(range(1, self.rank + 1))
+
+    def _build_standard_matrix(self, type_name):
+        letter = type_name[0]
+        n = int(type_name[1:])
+        matrix = [[0] * n for _ in range(n)]
+
+        for i in range(n): matrix[i][i] = 2
+
+        if letter in ['A', 'B', 'C']:
+            for i in range(n - 1):
+                matrix[i][i + 1] = -1
+                matrix[i + 1][i] = -1
+            if letter == 'B' and n >= 2:
+                matrix[n - 2][n - 1] = -1
+                matrix[n - 1][n - 2] = -2
+            elif letter == 'C' and n >= 2:
+                matrix[n - 2][n - 1] = -2
+                matrix[n - 1][n - 2] = -1
+        elif letter == 'D':
+            for i in range(n - 2):
+                matrix[i][i + 1] = -1
+                matrix[i + 1][i] = -1
+            matrix[n - 3][n - 1] = -1
+            matrix[n - 1][n - 3] = -1
+            matrix[n - 2][n - 1] = 0
+            matrix[n - 1][n - 2] = 0
+        elif letter == 'G' and n == 2:
+            matrix = [[2, -3], [-1, 2]]
+        else:
+            raise ValueError(f"Type {type_name} not natively supported. Pass cartan_matrix explicitly.")
+        return matrix
+
+    def alpha(self, i):
+        return tuple(self.matrix[j][i - 1] for j in range(self.rank))
+
+    def reflect(self, v, i):
+        c = v[i - 1]
+        a_i = self.alpha(i)
+        return tuple(v[j] - c * a_i[j] for j in range(self.rank))
+
+
+class CrystalNode:
+    def wt(self): raise NotImplementedError
+
+    def e(self, i): raise NotImplementedError
+
+    def f(self, i): raise NotImplementedError
+
+    def eps(self, i): raise NotImplementedError
+
+    def phi(self, i): raise NotImplementedError
+
+
+class LSPath(CrystalNode):
+    """Realizes a crystal node dynamically as a Littelmann piecewise linear path."""
+
+    def __init__(self, segments, algebra):
+        self.algebra = algebra
+        self.segments = self._clean(segments)
+
+    def _clean(self, segments):
+        if not segments: return ()
+        cleaned = []
+        curr_v, curr_l = segments[0]
+        for v, l in segments[1:]:
+            if l == Fraction(0): continue
+            if v == curr_v:
+                curr_l += l
+            else:
+                if curr_l > Fraction(0): cleaned.append((curr_v, curr_l))
+                curr_v, curr_l = v, l
+        if curr_l > Fraction(0): cleaned.append((curr_v, curr_l))
+        return tuple(cleaned)
+
+    def __hash__(self):
+        return hash(self.segments)
+
+    def __eq__(self, other):
+        return isinstance(other, LSPath) and self.segments == other.segments
+
+    def __repr__(self):
+        w = self.wt()
+        str_w = tuple(int(x) if x.denominator == 1 else float(x) for x in w)
+        return f"{str_w}"
+
+    def wt(self):
+        w = [Fraction(0)] * self.algebra.rank
+        for v, l in self.segments:
+            for i in range(self.algebra.rank):
+                w[i] += v[i] * l
+        return tuple(w)
+
+    def _height_data(self, i):
+        h_curr, min_h = Fraction(0), Fraction(0)
+        for v, l in self.segments:
+            h_curr += v[i - 1] * l
+            if h_curr < min_h: min_h = h_curr
+        return h_curr, min_h
+
+    def eps(self, i):
+        return -self._height_data(i)[1]
+
+    def phi(self, i):
+        h_end, min_h = self._height_data(i)
+        return h_end - min_h
+
+    def f(self, i):
+        h_curr = Fraction(0)
+        H_list = [Fraction(0)]
+        for v, l in self.segments:
+            h_curr += v[i - 1] * l
+            H_list.append(h_curr)
+
+        m = min(H_list)
+        if H_list[-1] - m < Fraction(1): return None
+
+        k_0 = len(H_list) - 1 - H_list[::-1].index(m)
+        new_segs = list(self.segments[:k_0])
+        h_curr = m
+
+        for idx in range(k_0, len(self.segments)):
+            v, l = self.segments[idx]
+            dh = v[i - 1] * l
+            if h_curr + dh >= m + Fraction(1):
+                dh_needed = m + Fraction(1) - h_curr
+                l_refl = dh_needed / v[i - 1]
+                v_refl = self.algebra.reflect(v, i)
+                new_segs.append((v_refl, l_refl))
+                new_segs.append((v, l - l_refl))
+                new_segs.extend(self.segments[idx + 1:])
+                break
+            else:
+                v_refl = self.algebra.reflect(v, i)
+                new_segs.append((v_refl, l))
+                h_curr += dh
+
+        return LSPath(new_segs, self.algebra)
+
+    def e(self, i):
+        h_curr = Fraction(0)
+        H_list = [Fraction(0)]
+        for v, l in self.segments:
+            h_curr += v[i - 1] * l
+            H_list.append(h_curr)
+
+        m = min(H_list)
+        if m > Fraction(-1): return None
+
+        k_1 = H_list.index(m)
+        k_0_bound = 0
+        for idx in range(k_1, -1, -1):
+            if H_list[idx] >= m + Fraction(1):
+                k_0_bound = idx
+                break
+
+        new_segs = list(self.segments[:k_0_bound])
+        h_curr = H_list[k_0_bound]
+
+        for idx in range(k_0_bound, k_1):
+            v, l = self.segments[idx]
+            dh = v[i - 1] * l
+            if h_curr >= m + Fraction(1) and h_curr + dh <= m + Fraction(1):
+                dh_unrefl = m + Fraction(1) - h_curr
+                l_unrefl = dh_unrefl / v[i - 1]
+                new_segs.append((v, l_unrefl))
+                v_refl = self.algebra.reflect(v, i)
+                new_segs.append((v_refl, l - l_unrefl))
+                h_curr += dh
+                for j in range(idx + 1, k_1):
+                    v_j, l_j = self.segments[j]
+                    new_segs.append((self.algebra.reflect(v_j, i), l_j))
+                break
+            else:
+                new_segs.append((v, l))
+                h_curr += dh
+
+        new_segs.extend(self.segments[k_1:])
+        return LSPath(new_segs, self.algebra)
+
+
+class TensorNode(CrystalNode):
+    def __init__(self, b1, b2):
+        self.b1 = b1
+        self.b2 = b2
+
+    def __repr__(self):
+        return f"({self.b1}⊗{self.b2})"
+
+    def __hash__(self):
+        return hash((self.b1, self.b2))
+
+    def __eq__(self, other):
+        return isinstance(other, TensorNode) and self.b1 == other.b1 and self.b2 == other.b2
+
+    def wt(self):
+        return tuple(x + y for x, y in zip(self.b1.wt(), self.b2.wt()))
+
+    def eps(self, i):
+        return max(self.b1.eps(i), self.b1.eps(i) + self.b2.eps(i) - self.b1.phi(i))
+
+    def phi(self, i):
+        return max(self.b2.phi(i), self.b2.phi(i) + self.b1.phi(i) - self.b2.eps(i))
+
+    def f(self, i):
+        if self.b1.phi(i) > self.b2.eps(i):
+            f_b1 = self.b1.f(i)
+            return TensorNode(f_b1, self.b2) if f_b1 else None
+        else:
+            f_b2 = self.b2.f(i)
+            return TensorNode(self.b1, f_b2) if f_b2 else None
+
+    def e(self, i):
+        if self.b1.phi(i) >= self.b2.eps(i):
+            e_b1 = self.b1.e(i)
+            return TensorNode(e_b1, self.b2) if e_b1 else None
+        else:
+            e_b2 = self.b2.e(i)
+            return TensorNode(self.b1, e_b2) if e_b2 else None
+
+
+class DirectSumNode(CrystalNode):
+    def __init__(self, base_node, component_id, component_label=None):
+        self.base_node = base_node
+        self.component_id = component_id
+        self.component_label = component_label if component_label else str(component_id)
+
+    def __repr__(self): return f"[{self.component_label}]{self.base_node}"
+
+    def __hash__(self): return hash((self.base_node, self.component_id))
+
+    def __eq__(self, other):
+        return (isinstance(other, DirectSumNode) and
+                self.base_node == other.base_node and
+                self.component_id == other.component_id)
+
+    def wt(self): return self.base_node.wt()
+
+    def eps(self, i): return self.base_node.eps(i)
+
+    def phi(self, i): return self.base_node.phi(i)
+
+    def f(self, i):
+        target = self.base_node.f(i)
+        return DirectSumNode(target, self.component_id, self.component_label) if target else None
+
+    def e(self, i):
+        target = self.base_node.e(i)
+        return DirectSumNode(target, self.component_id, self.component_label) if target else None
+
+
+def direct_sum(crystals, labels=None):
+    disjoint_union = []
+    for idx, B in enumerate(crystals):
+        label = labels[idx] if labels and idx < len(labels) else str(idx + 1)
+        for node in B:
+            disjoint_union.append(DirectSumNode(node, component_id=idx, component_label=label))
+    return disjoint_union
+
+
+def generate_crystal(lie_algebra, highest_weight):
+    v = tuple(Fraction(c) for c in highest_weight)
+    start_node = LSPath(((v, Fraction(1)),), lie_algebra)
+
+    B_lam = []
+    visited = set([start_node])
+    queue = [start_node]
+
+    while queue:
+        node = queue.pop(0)
+        B_lam.append(node)
+        for i in lie_algebra.index_set:
+            next_node = node.f(i)
+            if next_node is not None and next_node not in visited:
+                visited.add(next_node)
+                queue.append(next_node)
+
+    return B_lam
+
+
+def get_topological_order(nodes, lie_algebra):
+    G = nx.DiGraph()
+    for node in nodes:
+        G.add_node(node)
+        for i in lie_algebra.index_set:
+            target = node.f(i)
+            if target is not None and target in nodes:
+                G.add_edge(node, target)
+
+    ordered_nodes = []
+    components = list(nx.weakly_connected_components(G))
+    components.sort(key=len, reverse=True)
+
+    for comp in components:
+        subgraph = G.subgraph(comp)
+        ordered_nodes.extend(list(nx.topological_sort(subgraph)))
+
+    return ordered_nodes
+
+
+def analyze_and_draw_tensor_product(B_lam, B_mu, lie_algebra):
+    lam_ordered = get_topological_order(B_lam, lie_algebra)
+    mu_ordered = get_topological_order(B_mu, lie_algebra)
+
+    x_map = {node: i for i, node in enumerate(lam_ordered)}
+    y_map = {node: j for j, node in enumerate(mu_ordered)}
+
+    G = nx.MultiDiGraph()
+    tensor_nodes = [TensorNode(b1, b2) for b1 in lam_ordered for b2 in mu_ordered]
+
+    pos = {}
+    for node in tensor_nodes:
+        G.add_node(node)
+        pos[node] = (x_map[node.b1], len(mu_ordered) - y_map[node.b2])
+        for i in lie_algebra.index_set:
+            target = node.f(i)
+            if target is not None and target in tensor_nodes:
+                G.add_edge(node, target, label=i)
+
+    fig, ax = plt.subplots(figsize=(16, 14))
+
+    nx.draw_networkx_nodes(G, pos, ax=ax, node_color='whitesmoke', edgecolors='gray', node_size=700)
+    labels = {n: f"{n.b1}⊗{n.b2}" for n in G.nodes()}
+    nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=7, font_weight='bold')
+
+    color_palette = ['red', 'blue', 'green', 'purple', 'orange', 'cyan']
+    colors = {i: color_palette[(i - 1) % len(color_palette)] for i in lie_algebra.index_set}
+    curvatures_grid = {i: (-0.2 if i % 2 == 1 else 0.2) for i in lie_algebra.index_set}
+    curvatures_margin = {i: (-0.15 if i % 2 == 1 else 0.15) for i in lie_algebra.index_set}
+
+    for i in lie_algebra.index_set:
+        edges = [(u, v) for u, v, d in G.edges(data=True) if d['label'] == i]
+        nx.draw_networkx_edges(G, pos, ax=ax, edgelist=edges, edge_color=colors[i],
+                               arrows=True, arrowsize=15, width=1.2,
+                               connectionstyle=f'arc3,rad={curvatures_grid[i]}')
+
+    margin_offset_x = -1.5
+    margin_offset_y = len(mu_ordered) + 1.5
+
+    lam_pos = {node: (x_map[node], margin_offset_y) for node in lam_ordered}
+    G_lam = nx.MultiDiGraph()
+    for node in lam_ordered:
+        G_lam.add_node(node)
+        for i in lie_algebra.index_set:
+            if node.f(i) in lam_ordered: G_lam.add_edge(node, node.f(i), label=i)
+
+    nx.draw_networkx_nodes(G_lam, lam_pos, ax=ax, node_color='lightgreen', edgecolors='gray', node_size=600)
+    nx.draw_networkx_labels(G_lam, lam_pos, {n: str(n) for n in lam_ordered}, ax=ax, font_size=8)
+    for i in lie_algebra.index_set:
+        edges = [(u, v) for u, v, d in G_lam.edges(data=True) if d['label'] == i]
+        nx.draw_networkx_edges(G_lam, lam_pos, ax=ax, edgelist=edges, edge_color=colors[i], arrows=True,
+                               connectionstyle=f'arc3,rad={curvatures_margin[i]}')
+
+    mu_pos = {node: (margin_offset_x, len(mu_ordered) - y_map[node]) for node in mu_ordered}
+    G_mu = nx.MultiDiGraph()
+    for node in mu_ordered:
+        G_mu.add_node(node)
+        for i in lie_algebra.index_set:
+            if node.f(i) in mu_ordered: G_mu.add_edge(node, node.f(i), label=i)
+
+    nx.draw_networkx_nodes(G_mu, mu_pos, ax=ax, node_color='lightblue', edgecolors='gray', node_size=600)
+    nx.draw_networkx_labels(G_mu, mu_pos, {n: str(n) for n in mu_ordered}, ax=ax, font_size=8)
+    for i in lie_algebra.index_set:
+        edges = [(u, v) for u, v, d in G_mu.edges(data=True) if d['label'] == i]
+        nx.draw_networkx_edges(G_mu, mu_pos, ax=ax, edgelist=edges, edge_color=colors[i], arrows=True,
+                               connectionstyle=f'arc3,rad={curvatures_margin[i]}')
+
+    print("\n=== Decomposition of Tensor Product Space ===")
+    components = list(nx.weakly_connected_components(G))
+    irreducibles = []
+
+    for comp in components:
+        hw_nodes = [n for n in comp if all(n.e(i) is None for i in lie_algebra.index_set)]
+        if hw_nodes:
+            hw = hw_nodes[0]
+            irreducibles.append((hw.wt(), len(comp), hw, comp))
+
+    irreducibles.sort(key=lambda x: x[1], reverse=True)
+
+    total_dim = 0
+    for wt, dim, hw, comp in irreducibles:
+        comp_x = [pos[n][0] for n in comp]
+        comp_y = [pos[n][1] for n in comp]
+        min_x = min(comp_x)
+        max_y = max(comp_y)
+
+        bbox_props = dict(boxstyle="round,pad=0.3", fc="ivory", ec="gray", lw=1.5, alpha=0.9)
+        str_w = tuple(int(x) if x.denominator == 1 else float(x) for x in wt)
+        ax.text(min_x, max_y + 0.45, rf"$HW: {str_w}$" + "\n" + rf"$\dim: {dim}$",
+                fontsize=10, fontweight='bold', ha='center', va='bottom', bbox=bbox_props)
+
+        basis_str = " + ".join([f"{str_w[i]}*w{i + 1}" for i in range(lie_algebra.rank) if str_w[i] != 0])
+        if not basis_str: basis_str = "0"
+        print(f"B({basis_str}) : Dimension {dim}  [Generated by {hw}]")
+        total_dim += dim
+
+    print(f"---------------------------------------------")
+    print(f"Total Dimension Verified: {total_dim} = {len(B_lam)} * {len(B_mu)}\n")
+
+    plt.title(rf"Tensor Product $B(\lambda) \otimes B(\mu)$ (Type {lie_algebra.type_name})", fontsize=16, y=1.02)
+
+    for i in range(len(lam_ordered) + 1):
+        ax.axvline(i - 0.5, color='gray', linestyle=':', alpha=0.3)
+    for j in range(len(mu_ordered) + 1):
+        ax.axhline(j + 0.5, color='gray', linestyle=':', alpha=0.3)
+
+    ax.set_xlim(-2.5, len(lam_ordered))
+    ax.set_ylim(0, len(mu_ordered) + 3.0)
+    ax.axis('off')
+
+    legend_patches = [mpatches.Patch(color=colors[i], label=rf'$\tilde{{f}}_{i}$') for i in lie_algebra.index_set]
+    plt.legend(handles=legend_patches, loc='upper right', fontsize=12)
+
+    plt.tight_layout()
+    plt.show()
+
+    return G
+
+
+if __name__ == '__main__':
+    cartan = LieAlgebra('D3')
+
+    B1 = generate_crystal(cartan, (1, 0, 0))
+    B_trivial = generate_crystal(cartan, (0, 0, 1))
+
+    B_sum = direct_sum([B1, B_trivial], labels=['V', 'k'])
+
+    tensor_graph = analyze_and_draw_tensor_product(B_sum, B1, cartan)
