@@ -12,7 +12,6 @@ Implemented by M. Alqady - Last updated April 2026
 """
 
 
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import networkx as nx
@@ -79,7 +78,6 @@ class LieAlgebra:
         a_i = self.alpha(i)
         return tuple(v[j] - c * a_i[j] for j in range(self.rank))
 
-
 class CrystalNode:
     def wt(self): raise NotImplementedError
 
@@ -90,7 +88,6 @@ class CrystalNode:
     def eps(self, i): raise NotImplementedError
 
     def phi(self, i): raise NotImplementedError
-
 
 class LSPath(CrystalNode):
     def __init__(self, segments, algebra):
@@ -215,7 +212,6 @@ class LSPath(CrystalNode):
         new_segs.extend(self.segments[k_1:])
         return LSPath(new_segs, self.algebra)
 
-
 class TensorNode(CrystalNode):
     def __init__(self, b1, b2):
         self.b1, self.b2 = b1, b2
@@ -253,7 +249,6 @@ class TensorNode(CrystalNode):
         else:
             e_b2 = self.b2.e(i)
             return TensorNode(self.b1, e_b2) if e_b2 else None
-
 
 class MultiTensorNode(CrystalNode):
     def __init__(self, nodes):
@@ -305,7 +300,6 @@ class MultiTensorNode(CrystalNode):
     def phi(self, i):
         return self._to_nested().phi(i)
 
-
 class DirectSumNode(CrystalNode):
     def __init__(self, base_node, component_id, component_label=None):
         self.base_node = base_node
@@ -348,7 +342,6 @@ def direct_sum(crystals, labels=None):
             disjoint_union.append(DirectSumNode(node, component_id=idx, component_label=label))
     return disjoint_union
 
-
 def generate_crystal(lie_algebra, highest_weight):
     v = tuple(Fraction(c) for c in highest_weight)
     start_node = LSPath(((v, Fraction(1)),), lie_algebra)
@@ -366,7 +359,6 @@ def generate_crystal(lie_algebra, highest_weight):
                 visited.add(next_node)
                 queue.append(next_node)
     return B_lam
-
 
 def get_topological_order(nodes, lie_algebra):
     G = nx.DiGraph()
@@ -386,7 +378,6 @@ def get_topological_order(nodes, lie_algebra):
         ordered_nodes.extend(list(nx.topological_sort(subgraph)))
 
     return ordered_nodes
-
 
 def analyze_and_draw_tensor_product(B_lam, B_mu, lie_algebra):
     lam_ordered = get_topological_order(B_lam, lie_algebra)
@@ -501,7 +492,6 @@ def analyze_and_draw_tensor_product(B_lam, B_mu, lie_algebra):
     plt.show()
 
     return G
-
 
 def analyze_and_draw_multi_tensor_product(crystals_list, lie_algebra):
     G = nx.MultiDiGraph()
@@ -699,6 +689,7 @@ class StructuralMorphism(CrystalMorphism):
     def __repr__(self):
         return "[Polymorphic Structural Morphism - Evaluates Lazily]"
 
+
 # =====================================================================
 # 4. STRUCTURAL ISOMORPHISMS
 # =====================================================================
@@ -709,10 +700,8 @@ assoc_inv = StructuralMorphism(lambda n: TensorNode(TensorNode(n.b1, n.b2.b1), n
 lu = StructuralMorphism(lambda n: n.b2)
 ru = StructuralMorphism(lambda n: n.b1)
 
-
 def get_lambda_inv(trivial_node):
     return StructuralMorphism(lambda n: TensorNode(trivial_node, n))
-
 
 def get_rho_inv(trivial_node):
     return StructuralMorphism(lambda n: TensorNode(n, trivial_node))
@@ -748,7 +737,6 @@ def build_inclusion(B_in, B_out_1, B_out_2, lie_algebra):
 
     return CrystalMorphism(B_in, mapping, lie_algebra)
 
-
 def build_projection(B_in_1, B_in_2, B_target, lie_algebra):
     B_domain_tensor = [TensorNode(b1, b2) for b1 in B_in_1 for b2 in B_in_2]
     hw_target = B_target[0]
@@ -774,6 +762,7 @@ def build_projection(B_in_1, B_in_2, B_target, lie_algebra):
                 queue.append(nxt)
 
     return CrystalMorphism(B_domain_tensor, mapping, lie_algebra)
+
 
 # =====================================================================
 # BUILDING COMMUTORS
@@ -819,7 +808,6 @@ def build_commutor(B_i, B_j, lie_algebra):
                 queue.append(nxt)
 
     return CrystalMorphism(domain_nodes, mapping, lie_algebra)
-
 
 
 # =====================================================================
@@ -955,7 +943,6 @@ class LinearMorphism:
 # MORPHISM EVALUATION
 # =====================================================================
 
-
 def generate_domain_elements(domain_tree):
     """
     Recursively generates all elements of a tensor product domain.
@@ -994,7 +981,6 @@ def evaluate_morphism(morphism, domain_tree, name=None, print_zeros=True):
 
         if not is_zero or print_zeros:
             print(f"  {element}  |--->  {result}")
-
 
 
 # =====================================================================
@@ -1068,32 +1054,12 @@ def generate_An_category(n):
 if __name__ == '__main__':
     cartan, B, cup, cap, Y, Y_bar, comm, lu_inv, ru_inv = generate_An_category(3)
 
-    f = (
-        Y[2, 1, 1]
-            .compose(Y[1, 2, 3].tensor(id))
-            .compose(assoc)
-            .compose(id.tensor(comm[3, 1]))
-    )
+    f = Y[2, 1, 1].compose(Y[1, 2, 3].tensor(id)).compose(assoc).compose(id.tensor(comm[3, 1]))
 
     domain = B[2]
     evaluate_morphism(f, domain, 'f')
 
-    #example of crystal operation computation
-    '''
-    TypeG = LieAlgebra('B2')
-
-    B_01 = generate_crystal(TypeG, (0, 1))
-    B_10 = generate_crystal(TypeG, (1, 0))
-    B_triv = generate_crystal(TypeG, (0, 0))
-
-
-    B_sum = direct_sum([B_01, B_triv])
-    analyze_and_draw_tensor_product(B_sum,B_01, TypeG)
-    analyze_and_draw_multi_tensor_product([B_10, B_10, B_01], TypeG)
-    '''
-
-
-    #example: Zig-zag computation
+    # example: Zig-zag computation
     '''
     zig_zag = (
         lu_inv
@@ -1104,4 +1070,17 @@ if __name__ == '__main__':
     )
     domain_shape = (B[1])
     evaluate_morphism(zig_zag, domain_shape, "zig-zag")
+    '''
+
+    #example of crystal operation computation and visualization
+    '''
+    TypeB2 = LieAlgebra('B2')
+
+    B_01 = generate_crystal(TypeB2, (0, 1))
+    B_10 = generate_crystal(TypeB2, (1, 0))
+    B_triv = generate_crystal(TypeB2, (0, 0))
+
+    B_sum = direct_sum([B_01, B_triv])
+    analyze_and_draw_tensor_product(B_sum,B_01, TypeB2)
+    analyze_and_draw_multi_tensor_product([B_10, B_10, B_01], TypeB2)
     '''
